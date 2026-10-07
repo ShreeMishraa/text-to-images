@@ -1,0 +1,20 @@
+{
+  "panel_id": 1,
+  "shot_type": "FSA",
+  "scene": "NA",
+  "presenter": {
+    "is_present": false,
+    "audio_mode": "V.O.",
+    "position": "NA",
+    "dialogue": "What a lovely day at the park!"
+  },
+  "canvas_layout": {
+    "layout_mode": "full_bleed",
+    "primary_subject": "2D park animation with kids",
+    "visual_description": "Clean black and white 2D line-art pencil sketch illustration of a sunny park with trees, a wooden park bench, and a distant playground with swings and a slide. A young girl with a ponytail is running and kicking a soccer ball along a curving paved pathway, while a young boy wearing a helmet is riding a bicycle nearby. The sun is shining in the sky.",
+    "visual_state_delta": "Opening establishing shot of park activity"
+  },
+  "vector_annotations": [],
+  "text_overlays": [],
+  "continuity_ref": null
+}
