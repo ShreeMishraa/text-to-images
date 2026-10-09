@@ -1,8 +1,8 @@
 """
-Brick 3 Prototype: PanelSpec -> Storyboard Image Generator.
+Brick 3: PanelSpec -> Storyboard Image Generator.
 
-Takes a single PanelSpec from Brick 2, constructs an image generation prompt deterministically
-(without any LLM calls), and calls the Gemini/Imagen image generation API.
+Transforms a PanelSpec dictionary from planner.py into a high-contrast line-art 
+storyboard image using Google's Imagen model via the official google-genai SDK.
 """
 
 import os
@@ -14,18 +14,14 @@ load_dotenv()
 
 def build_image_prompt(panel_spec: dict) -> str:
     """
-    Deterministically constructs an image prompt from a PanelSpec.
-    Follows the client's approved storyboard visual language:
-    - Clean black and white line-art pencil sketch style
-    - Specific shot type and scene staging
-    - Precise subject and environment description from canvas_layout
-    - Explicit exclusions (no watermarks, no logos, no text)
+    Deterministically constructs an image prompt adhering to the client-approved 
+    visual language and reverse-engineered style anchors.
     """
     layout = panel_spec.get("canvas_layout", {})
-    desc = layout.get("visual_description", "")
+    visual_desc = layout.get("visual_description", "")
     shot_type = panel_spec.get("shot_type", "FSA")
 
-    # Client-approved aesthetic anchor (based on forensic reverse-engineering of approved samples)
+    # Client-Approved Aesthetic Anchor
     style_anchor = (
         "Educational storyboard illustration, clean black and white pencil sketch line-art style, "
         "crisp hand-drawn ink and graphite linework, high contrast, wide 16:9 widescreen composition."
@@ -36,7 +32,7 @@ def build_image_prompt(panel_spec: dict) -> str:
     parts = [
         style_anchor,
         shot_hint,
-        desc,
+        visual_desc,
         "Clean white paper background, sharp details, no text overlay, no watermark, no logo."
     ]
     return " ".join([p for p in parts if p]).strip()
@@ -45,25 +41,27 @@ def build_image_prompt(panel_spec: dict) -> str:
 def generate_panel_image(
     panel_spec: dict,
     output_path: str = "output/panel_001.png",
-    model_name: str = "imagen-3.0-generate-002"
+    model_name: str = None
 ) -> str:
     """
-    Generates a single storyboard image from a PanelSpec using the Gemini Image API.
+    Generates a single storyboard panel image using the official Google GenAI SDK.
     """
     from google import genai
 
+    if model_name is None:
+        model_name = os.getenv("IMAGEN_MODEL", "imagen-3.0-generate-002")
+
     prompt = build_image_prompt(panel_spec)
-    print(f"\nDeterministic Image Prompt:\n\"{prompt}\"\n")
+    print(f"\n[GENERATING IMAGE] Prompt:\n\"{prompt}\"\n")
 
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or api_key == "your_gemini_api_key_here":
+    if not api_key or api_key == "your_actual_api_key_here":
         raise ValueError(
             "GEMINI_API_KEY is missing or contains placeholder. "
-            "Please configure your valid API key in .env"
+            "Please configure your key in .env"
         )
 
     client = genai.Client(api_key=api_key)
-    print(f"Calling Gemini Image API ({model_name})...")
 
     result = client.models.generate_images(
         model=model_name,
@@ -76,7 +74,7 @@ def generate_panel_image(
     )
 
     if not result.generated_images:
-        raise RuntimeError("No image was returned by the model.")
+        raise RuntimeError("No image returned from Gemini/Imagen API.")
 
     image_bytes = result.generated_images[0].image.image_bytes
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -84,15 +82,16 @@ def generate_panel_image(
     with open(output_path, "wb") as f:
         f.write(image_bytes)
 
-    print(f"Successfully saved image to: {output_path}")
+    print(f"Successfully saved image: {output_path}")
     return output_path
 
 
 if __name__ == "__main__":
     spec_path = os.path.join("output", "sample_panel_001_spec.json")
-    with open(spec_path, "r", encoding="utf-8") as f:
-        spec = json.load(f)
-
-    print(f"Loaded PanelSpec for Panel {spec.get('panel_id')}: {spec.get('shot_type')}")
-    out_img = os.path.join("output", "panel_001.png")
-    generate_panel_image(spec, out_img)
+    if os.path.exists(spec_path):
+        with open(spec_path, "r", encoding="utf-8") as f:
+            spec = json.load(f)
+        out_img = os.path.join("output", "panel_001.png")
+        generate_panel_image(spec, out_img)
+    else:
+        print(f"Spec file not found: {spec_path}")

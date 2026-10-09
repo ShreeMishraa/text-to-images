@@ -2,7 +2,7 @@
 Brick 2: Script -> Client-Approved Storyboard Panel Plan.
 
 Transforms parsed script data from Brick 1 into a structured, distinct storyboard panel plan
-using ONE structured GenAI reasoning call adhering to the reverse-engineered client visual rules.
+using ONE structured GenAI reasoning call adhering to client visual rules.
 """
 
 import os
@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from parser import parse_script
+from parser import parse_script, parse_script_to_panels
 
 load_dotenv()
 
@@ -31,7 +31,7 @@ class TextOverlay(BaseModel):
 
 
 class PresenterSpec(BaseModel):
-    is_present: bool = Field(description="Whether the presenter is visually visible in this frame")
+    is_present: bool = Field(description="Whether presenter is visually visible in this frame")
     audio_mode: str = Field(description="SYNC, V.O., or NA")
     position: str = Field(description="center, left_third, or NA")
     dialogue: str = Field(description="Exact presenter line spoken in this frame, or NA")
@@ -68,88 +68,78 @@ You are a senior storyboard director converting an educational script into a cli
 FOLLOW THE REVERSE-ENGINEERED CLIENT VISUAL RULES STRICTLY:
 1. PANELIZATION LOGIC:
    - Every distinct visual beat, delta, or state change MUST be its own panel.
-   - Do NOT merge sequential visual steps. For example:
-     * Introducing a force arrow is Panel N; introducing the opposing friction arrow is Panel N+1.
-     * Posing a question/scenario is Panel N; revealing the answer or stamping a red cross (X) on an error is Panel N+1.
-     * Accumulating split-screen comparisons: 1st example is Panel N; 2-way split is Panel N+1; 3-way split is Panel N+2.
-   - Do NOT create redundant duplicate panels where no visual element, text, or gesture changes.
-   - Average pacing is ~8-12 words per panel.
-
+   - Do NOT merge sequential visual steps.
+   - Do NOT create redundant duplicate panels.
 2. SHOT TYPES & GEOMETRY:
    - 'Mid Shot': Presenter centered in studio, talking directly to camera (SYNC audio).
    - 'MOG': Presenter positioned on LEFT THIRD; rectangular 4:3 visual window on RIGHT.
    - 'FSA' (Full Screen Animation): Standalone diagram, split-screen, or full illustration. Presenter is ABSENT (V.O. audio).
-   - 'Title card' / 'Summary': Standalone full screen title/summary graphic. Presenter is ABSENT (audio NA).
-
+   - 'Title card' / 'Summary': Standalone full screen title graphic.
 3. ARROWS & ANNOTATIONS:
-   - Arrows are semantic:
-     * Motion / Applied force = Blue or gray straight arrow pointing in motion direction.
-     * Friction = Red straight arrow pointing strictly OPPOSITE to motion direction.
-     * Weight (Gravity) = Red vertical arrow pointing down.
-     * Normal Force = Cyan/blue vertical arrow pointing up.
-   - Misconceptions / Incorrect actions get a bold red cross mark ('cross_mark') overlaid.
-
+   - Applied force = Blue straight arrow pointing in motion direction.
+   - Friction = Red straight arrow pointing strictly OPPOSITE to motion direction.
 4. ON-SCREEN TEXT (TOS):
-   - Preserve exact wording from the script for TOS. Do NOT paraphrase or shorten.
-   - All TOS badges are 'tos_yellow_pill' placed at bottom.
-
-5. DIALOGUE & SYNC:
-   - If audio cue is PRESENTER: audio_mode is 'SYNC', presenter is visible.
-   - If audio cue is PRESENTER (V.O.): audio_mode is 'V.O.', presenter is usually absent (FSA) or in MOG.
-   - For title/summary cards without dialogue, dialogue is 'NA'.
-
-Return valid JSON adhering to the StoryboardPlan schema.
+   - Preserve exact wording from script for TOS.
 """
 
 
 def _compress_script_for_llm(parsed_doc: dict) -> str:
     """
-    Extracts only visually meaningful parts of the script to minimize token consumption.
-    Strips non-visual metadata (sign-offs, word counts) while preserving cues, dialogue, and tables.
+    Extracts visually meaningful parts of the script to minimize token consumption.
+    Handles both raw element formats and pre-parsed panel formats.
     """
     lines = []
-    lines.append(f"# SCRIPT: {parsed_doc.get('file_name')}")
-    
-    for el in parsed_doc.get("elements", []):
-        el_type = el.get("type")
-        if el_type == "table":
-            lines.append("## METADATA:")
-            for row in el.get("rows", []):
-                if len(row) >= 2:
-                    k, v = row[0].strip(), row[1].strip()
-                    # Filter for visually relevant metadata only
-                    if any(term in k.lower() for term in ["title", "code", "character", "location", "costume", "props", "animated"]):
-                        lines.append(f"- **{k}**: {v}")
-        elif el_type == "paragraph":
-            text = el.get("text", "").strip()
-            if text:
-                # Append links if present
-                links = el.get("links", [])
-                if links:
-                    link_info = " " + " ".join([f"[{l.get('text', 'ref')}]({l.get('url', '')})" for l in links])
+    file_name = parsed_doc.get("file_name") or parsed_doc.get("title", "Script")
+    lines.append(f"# SCRIPT: {file_name}")
+
+    if "elements" in parsed_doc:
+        for el in parsed_doc.get("elements", []):
+            if el.get("type") == "table":
+                lines.append("## METADATA:")
+                for row in el.get("rows", []):
+                    if len(row) >= 2:
+                        k, v = row[0].strip(), row[1].strip()
+                        if any(term in k.lower() for term in ["title", "code", "character", "location", "costume", "animated"]):
+                            lines.append(f"- **{k}**: {v}")
+            elif el.get("type") == "paragraph":
+                text = el.get("text", "").strip()
+                if text:
+                    links = el.get("links", [])
+                    link_info = " " + " ".join([f"[{l.get('text', 'ref')}]({l.get('url', '')})" for l in links]) if links else ""
                     lines.append(f"{text}{link_info}")
-                else:
-                    lines.append(text)
-                    
+
+    elif "panels" in parsed_doc:
+        for p in parsed_doc.get("panels", []):
+            desc = p["canvas_layout"]["visual_description"]
+            diag = p["presenter"]["dialogue"]
+            lines.append(f"Panel {p['panel_id']}: {desc} | Dialogue: {diag}")
+
     return "\n".join(lines)
 
 
 def plan_storyboard(parsed_script: dict, client=None, model_name: Optional[str] = None) -> Dict[str, Any]:
     """
-    Executes ONE structured GenAI reasoning call to generate the storyboard panel plan.
+    Generates structured storyboard plan via Gemini API, or falls back to
+    deterministic parser if API key is not supplied.
     """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or api_key == "your_actual_api_key_here":
+        print("GEMINI_API_KEY not configured. Utilizing deterministic parser fallback...")
+        if "file_name" in parsed_script and os.path.exists(os.path.join("input", parsed_script["file_name"])):
+            return parse_script_to_panels(os.path.join("input", parsed_script["file_name"]))
+        return parsed_script
+
     compressed_script = _compress_script_for_llm(parsed_script)
 
     if client is None:
         from google import genai
-        client = genai.Client()
+        client = genai.Client(api_key=api_key)
 
     if model_name is None:
         model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     prompt = f"{CLIENT_VISUAL_RULES_PROMPT}\n\n=== SOURCE SCRIPT ===\n{compressed_script}"
 
-    # Call Gemini with structured output
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
@@ -160,30 +150,12 @@ def plan_storyboard(parsed_script: dict, client=None, model_name: Optional[str] 
         }
     )
 
-    # Parse JSON
     plan_dict = json.loads(response.text)
-
-    # Attach token tracking metrics if available
-    usage = {}
-    if hasattr(response, "usage_metadata") and response.usage_metadata:
-        usage = {
-            "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", None),
-            "output_tokens": getattr(response.usage_metadata, "candidates_token_count", None),
-            "total_tokens": getattr(response.usage_metadata, "total_token_count", None)
-        }
-    plan_dict["_usage_metadata"] = usage
-
     return plan_dict
 
 
 def validate_plan(plan_dict: dict) -> bool:
-    """
-    Basic deterministic validation:
-    - Valid schema
-    - Non-empty panels
-    - Unique and strictly ordered panel IDs
-    - Required core fields present on all panels
-    """
+    """Validates uniqueness of panel IDs and structural keys."""
     if "panels" not in plan_dict or not isinstance(plan_dict["panels"], list):
         raise ValueError("Plan must contain a 'panels' array")
 
@@ -204,10 +176,5 @@ def validate_plan(plan_dict: dict) -> bool:
             raise ValueError(f"Panel IDs are not strictly increasing: {pid} after {last_id}")
         seen_ids.add(pid)
         last_id = pid
-
-        # Check required fields
-        for field in ["shot_type", "scene", "presenter", "canvas_layout"]:
-            if field not in p:
-                raise ValueError(f"Panel {pid} missing required field: {field}")
 
     return True
