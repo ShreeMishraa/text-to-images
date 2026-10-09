@@ -1,10 +1,12 @@
 """
 Brick 1: Document Parser.
-Parses script (.docx) text and extracts visual reference images from PDF.
+Parses script (.docx or .pdf) and extracts visual reference images 
+from reference files (.pdf or .docx).
 """
 
 import os
 import re
+import zipfile
 import docx
 from docx.text.paragraph import Paragraph
 from docx.table import Table
@@ -27,7 +29,7 @@ def _extract_links_from_docx_paragraph(paragraph, doc) -> list:
 
 
 def parse_docx(file_path: str) -> dict:
-    """Parses text, metadata, and links from the script .docx file."""
+    """Parses text, metadata, and links from a .docx file."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
@@ -65,25 +67,46 @@ def parse_docx(file_path: str) -> dict:
     }
 
 
-def extract_reference_images_from_pdf(pdf_path: str, output_dir: str = "output/refs") -> dict:
-    """
-    Extracts embedded visual reference images from the client's reference PDF.
-    Saves them as ref_001.png, ref_002.png, etc., and returns a mapping dictionary.
-    """
-    if not pdf_path or not os.path.exists(pdf_path):
-        return {}
-
+def parse_pdf(file_path: str) -> dict:
+    """Parses text blocks and metadata from a .pdf file."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
     if pypdf is None:
-        raise ImportError("pypdf is required for image extraction")
+        raise ImportError("pypdf is required for parsing PDF files")
+
+    reader = pypdf.PdfReader(file_path)
+    elements = []
+    metadata = {}
+
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            for line in text.split('\n'):
+                line_str = line.strip()
+                if line_str:
+                    elements.append({"type": "paragraph", "text": line_str, "links": []})
+
+    return {
+        "file_name": os.path.basename(file_path),
+        "format": "pdf",
+        "metadata": metadata,
+        "total_elements": len(elements),
+        "elements": elements
+    }
+
+
+def extract_reference_images_from_pdf(pdf_path: str, output_dir: str = "output/refs") -> dict:
+    """Extracts embedded images from a reference PDF file."""
+    if not pdf_path or not os.path.exists(pdf_path) or pypdf is None:
+        return {}
 
     os.makedirs(output_dir, exist_ok=True)
     reader = pypdf.PdfReader(pdf_path)
     ref_image_map = {}
     img_counter = 1
 
-    for page_num, page in enumerate(reader.pages):
+    for page in reader.pages:
         for img in page.images:
-            # Save extracted image
             img_filename = f"ref_{img_counter:03d}.png"
             img_path = os.path.join(output_dir, img_filename)
             try:
@@ -93,24 +116,71 @@ def extract_reference_images_from_pdf(pdf_path: str, output_dir: str = "output/r
                 ref_image_map[ref_key] = img_path
                 img_counter += 1
             except Exception as e:
-                print(f"[Warning] Could not save reference image {img_counter}: {e}")
+                print(f"[Warning] Could not save PDF reference image {img_counter}: {e}")
 
     return ref_image_map
 
 
-def parse_script_to_panels(script_docx_path: str, ref_pdf_path: str = None) -> dict:
+def extract_reference_images_from_docx(docx_path: str, output_dir: str = "output/refs") -> dict:
+    """Extracts embedded images from a reference DOCX file archive."""
+    if not docx_path or not os.path.exists(docx_path):
+        return {}
+
+    os.makedirs(output_dir, exist_ok=True)
+    ref_image_map = {}
+    img_counter = 1
+
+    try:
+        with zipfile.ZipFile(docx_path, 'r') as z:
+            for filename in z.namelist():
+                if filename.startswith('word/media/'):
+                    ext = os.path.splitext(filename)[1]
+                    img_filename = f"ref_{img_counter:03d}{ext}"
+                    img_path = os.path.join(output_dir, img_filename)
+                    with open(img_path, 'wb') as f:
+                        f.write(z.read(filename))
+                    ref_key = f"ref {img_counter}"
+                    ref_image_map[ref_key] = img_path
+                    img_counter += 1
+    except Exception as e:
+        print(f"[Warning] Could not extract images from DOCX reference: {e}")
+
+    return ref_image_map
+
+
+def extract_reference_images(ref_path: str, output_dir: str = "output/refs") -> dict:
+    """Dispatches reference image extraction based on file extension (.pdf or .docx)."""
+    if not ref_path or not os.path.exists(ref_path):
+        return {}
+    ext = os.path.splitext(ref_path)[1].lower()
+    if ext == ".pdf":
+        return extract_reference_images_from_pdf(ref_path, output_dir)
+    elif ext in [".docx", ".doc"]:
+        return extract_reference_images_from_docx(ref_path, output_dir)
+    return {}
+
+
+def parse_script(file_path: str) -> dict:
+    """Unified entry point for raw file extraction (DOCX or PDF)."""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in [".docx", ".doc"]:
+        return parse_docx(file_path)
+    elif ext == ".pdf":
+        return parse_pdf(file_path)
+    else:
+        raise ValueError(f"Unsupported format: {ext}")
+
+
+def parse_script_to_panels(script_path: str, ref_path: str = None) -> dict:
     """
-    Parses script DOCX for dialogue/scenes and extracts reference IMAGES from reference PDF.
-    Maps tags like (ref 1) directly to extracted reference image files.
+    Parses ANY script (.docx or .pdf) and attaches images from ANY reference file (.pdf or .docx).
     """
-    raw_doc = parse_docx(script_docx_path)
+    raw_doc = parse_script(script_path)
     elements = raw_doc.get("elements", [])
     metadata = raw_doc.get("metadata", {})
 
-    # Extract visual reference images from PDF
-    ref_images_map = {}
-    if ref_pdf_path:
-        ref_images_map = extract_reference_images_from_pdf(ref_pdf_path)
+    # Extract reference images from reference file
+    ref_images_map = extract_reference_images(ref_path) if ref_path else {}
 
     panels = []
     current_scene = "NA"
