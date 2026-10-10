@@ -1,100 +1,103 @@
 import os
 import json
+import shutil
 import streamlit as st
 from parser import parse_script_to_panels
-from generator import generate_panel_image
+from planner import plan_storyboard
+from generator import generate_prompts_pdf, build_image_prompt
 
 st.set_page_config(page_title="AI Storyboard Generator", layout="wide")
 st.title("🎬 Educational Storyboard Pipeline")
-st.write("Upload the script (.docx) and the visual reference file (.pdf) to parse panels and generate line-art sketches.")
+st.write("Upload your script file (.docx/.pdf) and visual reference file (.pdf/.docx) to generate master storyboard prompts.")
 
 input_dir = "input"
 output_dir = "output"
 os.makedirs(input_dir, exist_ok=True)
 os.makedirs(output_dir, exist_ok=True)
 
-# --- DUAL FILE UPLOADERS ---
+# --- SIDEBAR & WORKSPACE RESET ---
 st.sidebar.header("📁 Mandatory Client Files")
 
-uploaded_script = st.sidebar.file_uploader("1. Script Document (.docx)", type=["docx"])
-uploaded_ref_pdf = st.sidebar.file_uploader("2. Visual Reference PDF (.pdf)", type=["pdf"])
+if st.sidebar.button("🧹 Clear Workspace"):
+    for folder in [input_dir, output_dir]:
+        if os.path.exists(folder):
+            for filename in os.listdir(folder):
+                file_path = os.path.join(folder, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    print(f"Error clearing {file_path}: {e}")
+    st.sidebar.success("Workspace reset successfully.")
+    st.rerun()
+
+uploaded_script = st.sidebar.file_uploader("1. Script Document (.docx / .pdf)", type=["docx", "pdf"])
+uploaded_ref_doc = st.sidebar.file_uploader("2. Visual Reference File (.pdf / .docx)", type=["pdf", "docx"])
 
 script_saved_path = None
-ref_pdf_saved_path = None
+ref_doc_saved_path = None
 
 if uploaded_script:
     script_saved_path = os.path.join(input_dir, uploaded_script.name)
     with open(script_saved_path, "wb") as f:
         f.write(uploaded_script.getbuffer())
-    st.sidebar.success(f"Loaded Script: {uploaded_script.name}")
+    st.sidebar.success(f"Script: {uploaded_script.name}")
 
-if uploaded_ref_pdf:
-    ref_pdf_saved_path = os.path.join(input_dir, uploaded_ref_pdf.name)
-    with open(ref_pdf_saved_path, "wb") as f:
-        f.write(uploaded_ref_pdf.getbuffer())
-    st.sidebar.success(f"Loaded Ref PDF: {uploaded_ref_pdf.name}")
+if uploaded_ref_doc:
+    ref_doc_saved_path = os.path.join(input_dir, uploaded_ref_doc.name)
+    with open(ref_doc_saved_path, "wb") as f:
+        f.write(uploaded_ref_doc.getbuffer())
+    st.sidebar.success(f"Ref File: {uploaded_ref_doc.name}")
 
-# --- PARSE AND PLAN ---
+plan_file_path = os.path.join(output_dir, "current_panel_plan.json")
+
+# --- PARSE AND PLAN ACTION ---
 if script_saved_path:
-    if st.sidebar.button("🚀 Parse & Map Visual References"):
-        with st.spinner("Extracting script dialogue and reference IMAGES from PDF..."):
-            panel_data = parse_script_to_panels(script_saved_path, ref_pdf_saved_path)
-            plan_file = os.path.join(output_dir, "v26cb09ph0601_panel_plan.json")
-            with open(plan_file, "w", encoding="utf-8") as f:
+    if st.sidebar.button("🚀 Parse & Generate Plan"):
+        with st.spinner("Extracting script beats and generating fine-grained panel plan..."):
+            parsed_data = parse_script_to_panels(script_saved_path, ref_doc_saved_path)
+            panel_data = plan_storyboard(parsed_data)
+
+            with open(plan_file_path, "w", encoding="utf-8") as f:
                 json.dump(panel_data, f, indent=2)
 
-        st.success(f"Parsed {panel_data['total_panels']} panels and mapped visual reference images!")
+        st.success(f"Successfully generated {panel_data['total_panels']} panels for '{uploaded_script.name}'!")
+        st.rerun()
 
-# --- DISPLAY STORYBOARD ---
-plan_path = os.path.join(output_dir, "v26cb09ph0601_panel_plan.json")
-if os.path.exists(plan_path):
-    with open(plan_path, "r", encoding="utf-8") as f:
+# --- DISPLAY STORYBOARD GRID ---
+if os.path.exists(plan_file_path):
+    with open(plan_file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     panels = data.get("panels", [])
+    script_title = data.get("title", "Storyboard Script")
 
-    st.subheader("🖼️ Test Batch Generation")
-    if st.button("Generate First 5 Images in One Go"):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    st.subheader(f"📄 Active Script: {script_title}")
 
-        MAX_BATCH = 5
-        generated_count = 0
+    pdf_path = os.path.join(output_dir, "all_storyboard_prompts.pdf")
 
-        for panel in panels:
-            pid = panel["panel_id"]
-            img_path = os.path.join(output_dir, f"panel_{pid:03d}.png")
+    if st.button("Generate Master Prompts PDF"):
+        generate_prompts_pdf(data, pdf_path)
+        st.success(f"Exported Master PDF for {len(panels)} panels!")
 
-            if os.path.exists(img_path):
-                continue
-
-            if generated_count >= MAX_BATCH:
-                st.info("Capped at 5 images for this test batch.")
-                break
-
-            status_text.text(f"Rendering Panel {pid:03d} ({generated_count + 1}/{MAX_BATCH})...")
-
-            try:
-                generate_panel_image(panel, img_path)
-                generated_count += 1
-                progress_bar.progress(generated_count / MAX_BATCH)
-            except Exception as e:
-                st.error(f"Error on Panel {pid:03d}: {e}")
-                break
-
-        if generated_count > 0:
-            st.success(f"Rendered {generated_count} new images!")
-            st.rerun()
-        else:
-            st.info("First 5 panel images are already generated.")
+    if os.path.exists(pdf_path):
+        with open(pdf_path, "rb") as pdf_file:
+            st.download_button(
+                label="📥 Download All Panel Prompts (PDF)",
+                data=pdf_file,
+                file_name="storyboard_prompts.pdf",
+                mime="application/pdf"
+            )
 
     st.divider()
-    st.subheader("📋 Client Approved Storyboard Comparison Grid")
+    st.subheader(f"📋 Storyboard Panels & Prompts Grid ({len(panels)} Panels)")
 
     for panel in panels:
         pid = panel["panel_id"]
-        img_path = os.path.join(output_dir, f"panel_{pid:03d}.png")
         ref_imgs = panel.get("ref_image_paths", [])
+        prompt_text = build_image_prompt(panel)
 
         st.markdown(f"### Panel {pid:03d} — {panel['shot_type']} ({panel['scene']})")
 
@@ -104,25 +107,16 @@ if os.path.exists(plan_path):
         with c1:
             st.write("**Client Reference Image:**")
             if ref_imgs and os.path.exists(ref_imgs[0]):
-                st.image(ref_imgs[0], caption=f"Extracted Reference ({panel['references'][0]})")
+                st.image(ref_imgs[0], caption=f"Reference ({panel['references'][0]})")
             else:
-                st.caption("No reference image tag attached.")
+                st.caption("No reference image attached.")
 
-        # Column 2: Generated AI Sketch
+        # Column 2: Copy-Paste Prompt Box
         with c2:
-            st.write("**Generated AI Sketch:**")
-            if os.path.exists(img_path):
-                st.image(img_path, caption=f"Generated Panel {pid:03d}")
-            else:
-                st.info(f"Pending generation.")
-                if st.button(f"Render Panel {pid:03d}", key=f"btn_{pid}"):
-                    try:
-                        generate_panel_image(panel, img_path)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(str(e))
+            st.write("**Copy-Paste Prompt for Image Generation:**")
+            st.code(prompt_text, language="text")
 
-        # Column 3: Text & TOS Badges
+        # Column 3: Script Details
         with c3:
             st.write("**Script Details:**")
             if panel["presenter"]["dialogue"] != "NA":
@@ -134,3 +128,5 @@ if os.path.exists(plan_path):
                 st.warning(f"**TOS Badge:** {' | '.join(tos_items)}")
 
         st.divider()
+else:
+    st.info("👈 Upload your script and reference file in the sidebar, then click 'Parse & Generate Plan'.")
