@@ -1,7 +1,6 @@
 """
-Brick 1: Script Document Parser & Reference Image Extractor.
-Parses script documents (.docx or .pdf) preserving all structural elements,
-dialogues, TOS cues, and extracts embedded reference images from reference files.
+Brick 1: Universal Script Document Parser & Reference Image Extractor.
+Extracts script beats, metadata, tables, and embedded reference images from ANY uploaded .docx/.pdf.
 """
 
 import os
@@ -17,6 +16,13 @@ except ImportError:
     pypdf = None
 
 
+def clean_parsed_text(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def parse_docx(file_path: str) -> dict:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -28,13 +34,13 @@ def parse_docx(file_path: str) -> dict:
     for child in doc.element.body:
         if child.tag.endswith('p'):
             p = Paragraph(child, doc)
-            text = p.text.strip()
+            text = clean_parsed_text(p.text)
             if text:
                 elements.append({"type": "paragraph", "text": text})
         elif child.tag.endswith('tbl'):
             table = Table(child, doc)
             for row in table.rows:
-                row_cells = [cell.text.strip() for cell in row.cells]
+                row_cells = [clean_parsed_text(cell.text) for cell in row.cells]
                 if len(row_cells) >= 2 and row_cells[0]:
                     metadata[row_cells[0]] = row_cells[1]
 
@@ -55,7 +61,7 @@ def parse_pdf(file_path: str) -> dict:
         text = page.extract_text()
         if text:
             for line in text.split('\n'):
-                line_str = line.strip()
+                line_str = clean_parsed_text(line)
                 if line_str:
                     elements.append({"type": "paragraph", "text": line_str})
 
@@ -106,13 +112,13 @@ def parse_script_to_panels(script_path: str, ref_path: str = None) -> dict:
     parsed_paragraphs = []
     for el in elements:
         text = el["text"].strip()
-        if not text or text.startswith("V25") or text.startswith("Script Code") or "For Internal Use Only" in text:
+        if not text or "For Internal Use Only" in text:
             continue
         parsed_paragraphs.append(text)
 
     return {
         "title": metadata.get("Title", "Educational Storyboard Script"),
-        "script_code": metadata.get("Script Code", "v26cb"),
+        "script_code": metadata.get("Script Code", "GENERIC_01"),
         "raw_paragraphs": parsed_paragraphs,
         "ref_images_map": ref_images_map
     }

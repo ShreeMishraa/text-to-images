@@ -1,7 +1,8 @@
 """
 Brick 3: Master Prompt Builder & PDF Exporter.
-Constructs line-art pencil sketch prompts with color scrubbing and layout enforcement.
-Outputs master prompt PDF (output/all_storyboard_prompts.pdf).
+Constructs highly detailed educational storyboard prompts that match client reference specs.
+Supports flexible style detection (color studio/graphic overlays vs. monochrome artwork)
+and detailed per-panel asset compositions.
 """
 
 import os
@@ -22,107 +23,118 @@ def sanitize_text(text: str) -> str:
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 
-def scrub_color_words(text: str) -> str:
-    """Removes color adjectives to prevent AI models from generating color fills."""
-    color_map = {
-        r'\bgreen sari\b': 'patterned traditional sari',
-        r'\bgreen plastic watering can\b': 'watering can',
-        r'\bgreen\b': 'lush',
-        r'\breddish-brown\b': 'granular',
-        r'\breddish-ochre\b': 'iron-rich',
-        r'\breddish\b': 'granular',
-        r'\bred\b': 'terracotta',
-        r'\byellowish-grey\b': 'grained',
-        r'\byellow\b': 'grained',
-        r'\bblue sky\b': 'clear sky',
-        r'\bblue\b': 'clear',
-        r'\bgolden\b': 'ripe',
-        r'\bgold\b': 'ripe',
-        r'\bdark grey-charcoal\b': 'dark',
-        r'\bterracotta red\b': 'terracotta'
-    }
-    for pattern, repl in color_map.items():
-        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
-    return text
+def clean_text_descriptors(text: str) -> str:
+    if not text:
+        return ""
+    # Clean OCR duplicate words (e.g., 'clear clear', 'ripe-lush')
+    text = re.sub(r"\b(clear|lush|ripe|green)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
-def build_image_prompt(panel_spec: dict) -> str:
+def build_image_prompt(panel_spec: dict, global_style_override: str = None) -> str:
+    """
+    Builds an expansive, high-detail prompt tailored for educational storyboards.
+    Dynamically checks if monochrome line-art is explicitly requested; 
+    otherwise default to clean, realistic/vector educational graphics & live presenter studio.
+    """
     layout = panel_spec.get("canvas_layout", {})
-    vis_desc = layout.get("visual_description", "")
-    shot_type = panel_spec.get("shot_type", "FSA")
+    vis_desc = clean_text_descriptors(layout.get("visual_description", ""))
+    shot_type = panel_spec.get("shot_type", "Mid Shot")
     layout_mode = layout.get("layout_mode", "full_bleed")
+    scene_str = (panel_spec.get("scene") or "").upper()
+    
+    # 1. Determine Visual Aesthetic (Color vs. Grayscale)
+    # Default to clean educational color visual unless explicitly instructed by ref doc / prompt
+    is_explicit_monochrome = False
+    combined_check_text = (vis_desc + " " + (global_style_override or "")).lower()
+    
+    if any(k in combined_check_text for k in ["monochrome", "grayscale", "black and white", "line art", "pencil sketch"]):
+        is_explicit_monochrome = True
 
-    # Scrub color words to enforce pure line art
-    vis_desc_scrubbed = scrub_color_words(vis_desc)
-
-    # 1. Base Line-Art Aesthetic Anchor
-    style_anchor = (
-        "STRICT MONOCHROME GRAYSCALE, pure black and white line-art pencil sketch, "
-        "crisp hand-drawn ink and graphite linework, fine hatching and cross-hatching, "
-        "high contrast, 16:9 widescreen composition, clean white paper background, "
-        "zero color fill, no color shading, no color gradients."
-    )
-
-    # 2. Layout & Framing Directives
-    layout_directive = ""
-    if layout_mode == "split_3way" or "3-way" in vis_desc_scrubbed.lower() or "three-way" in vis_desc_scrubbed.lower():
-        layout_directive = (
-            "Composition: 3-way vertical split screen layout with three equal side-by-side vertical panels "
-            "separated by clean, straight thin black dividing border lines."
+    if is_explicit_monochrome:
+        style_anchor = (
+            "Aesthetic Style: Fine black and white line-art pencil and ink illustration, crisp graphite linework, "
+            "detailed hatching, high contrast, clean white background, 16:9 widescreen layout."
         )
-    elif layout_mode == "split_2way" or "split" in vis_desc_scrubbed.lower():
-        layout_directive = (
-            "Composition: 2-way vertical split screen layout with two equal side-by-side vertical panels "
-            "separated by a clean, straight thin black dividing border line."
+    else:
+        style_anchor = (
+            "Aesthetic Style: Professional 16:9 widescreen educational broadcast video layout, high quality, "
+            "clean lighting, vibrant crisp graphics, clean studio background."
         )
-    elif layout_mode == "presenter_with_mog_inset":
-        layout_directive = (
-            "Composition: Presenter standing on the left third of the screen in studio; "
-            "a rectangular 4:3 graphic inset window on the right third displaying line-art illustration."
+
+    # 2. Composition & Layout Specifications
+    comp_parts = []
+    if layout_mode == "split_3way" or "3-way" in vis_desc.lower() or "three-way" in vis_desc.lower():
+        comp_parts.append(
+            "Composition: Clean 3-way vertical split screen layout divided into three equal side-by-side panels "
+            "separated by thin neat black border lines."
+        )
+    elif layout_mode == "split_2way" or "split" in vis_desc.lower():
+        comp_parts.append(
+            "Composition: Clean 2-way vertical split screen layout divided into two equal side-by-side panels "
+            "separated by a neat dividing line."
+        )
+    elif layout_mode == "presenter_with_mog_inset" or "MOG" in shot_type:
+        comp_parts.append(
+            "Composition: MOG Layout. Left side features the presenter standing in an educational studio facing the camera. "
+            "Right side features a distinct clean graphic card floating in the frame with high contrast details."
         )
     elif shot_type == "Mid Shot":
-        layout_directive = "Composition: Mid shot framing, presenter standing centered in studio addressing camera."
+        comp_parts.append("Composition: Mid shot framing centered on presenter speaking directly to camera in an educational video studio.")
+    elif shot_type in ["FSA", "Full Screen Graphic", "Title card", "TOS 1"]:
+        comp_parts.append(f"Composition: Full screen graphic layout ({shot_type}) formatted for clarity and educational presentation.")
     else:
-        layout_directive = f"Shot framing: {shot_type}."
+        comp_parts.append(f"Composition: {shot_type} framing with clear visual focal points.")
 
-    # 3. Contextual Visual Anchors
-    scene_context = ""
-    vis_lower = vis_desc_scrubbed.lower()
-
-    if any(k in vis_lower for k in ["classroom", "pot", "soil", "plant", "seed", "water", "dark soil"]):
-        scene_context = (
-            "Setting: Indian classroom interior with a large blackboard in background reading 'SOIL EXPERIMENT - PLANT GROWTH' and educational posters on walls. "
-            "Characters: Indian female teacher in traditional sari and Indian school children wearing neat school uniforms. "
-            "Props: Terracotta clay pots resting on a wooden table with printed front labels 'DARK SOIL', 'RED SOIL', 'SANDY SOIL'."
+    # 3. Subject, Details, and Contextual Scene Building
+    detail_parts = []
+    
+    # Context-aware asset enhancement
+    if "classroom" in vis_desc.lower() or "INT. CLASSROOM" in scene_str:
+        detail_parts.append(
+            "Setting: Indian middle-school science laboratory. Environment includes a neat blackboard in background with clean text, "
+            "wooden science bench, terracotta clay pots with printed labels ('DARK SOIL', 'RED SOIL', 'SANDY SOIL'), and students in uniform."
         )
-    elif any(k in vis_lower for k in ["detective", "artifact", "cylinder", "weighing balance", "density", "beaker"]):
-        scene_context = (
-            "Setting: Detective study room with a wooden table containing a glass measuring cylinder filled with water, "
-            "beaker, thread, and digital scale. Background: Cork board with suspect photos connected by string. "
-            "Characters: Presenter wearing a detective trench coat and holding a magnifying glass."
+    elif "studio" in vis_desc.lower() or "INT. STUDIO" in scene_str:
+        detail_parts.append(
+            "Setting: Modern minimalist educational broadcast studio with soft neutral studio backdrop and clean studio floor."
         )
-    elif "alluvial" in vis_lower:
-        scene_context = "Setting: Wide river plains with river sediment depositing, active alluvial soil, rice paddies and wheat fields, distant Himalayan foothills."
-    elif "black soil" in vis_lower or "cotton" in vis_lower:
-        scene_context = "Setting: Deccan traps basalt plateau landscape, dark soil with deep dry cracks, mature cotton plants with white cotton bolls."
-    elif "red soil" in vis_lower or "millet" in vis_lower:
-        scene_context = "Setting: Dry peninsular hills landscape, iron-rich granular soil, pearl millet and pigeon pea crops growing."
-    elif "laterite" in vis_lower or "tea" in vis_lower:
-        scene_context = "Setting: High-rainfall hilly slopes with terraced tea and coffee plantations, misty rain-shrouded peaks, leached coarse soil."
-    elif "desert soil" in vis_lower or "sandy land" in vis_lower:
-        scene_context = "Setting: Arid desert landscape with dry riverbed, wind-blown sand sheets, sparse drought-resistant bajra millet crops."
-    elif "mountain" in vis_lower or "alpine" in vis_lower or "terrace" in vis_lower:
-        scene_context = "Setting: Snow-capped Himalayan alpine peaks, terraced hillside contour farming with apple fruit orchards and fast-flowing mountain stream."
+    elif any(k in vis_desc.lower() for k in ["map", "uk", "india", "canada", "sweden", "usa"]):
+        detail_parts.append(
+            "Graphic Asset: Highly detailed, crisp geographic map graphic with vibrant regional highlighting and bold outline labels."
+        )
 
-    prompt_parts = [
-        style_anchor,
-        layout_directive,
-        scene_context,
-        f"Visual Action: {vis_desc_scrubbed}",
-        "No color, no watercolor, no digital color render, no watermark, no logo, no text overlay outside specified labels."
+    detail_parts.append(f"Primary Action & Scene Details: {vis_desc}")
+
+    # 4. Text Overlay Directives
+    text_directives = []
+    tos_items = panel_spec.get("text_overlays", [])
+    if tos_items:
+        tos_str = " | ".join([clean_text_descriptors(t['text'] if isinstance(t, dict) else t) for t in tos_items])
+        text_directives.append(
+            f"On-Screen Text Elements: Render clean graphic text box badge displaying EXACT text: \"{tos_str}\". "
+            "Typography must be bold, legible, and centered within the graphic badge."
+        )
+    else:
+        text_directives.append("On-Screen Text Elements: No text overlays outside specified visual graphic elements.")
+
+    # 5. Negative Prompt & Quality Constraints
+    constraints = [
+        "Constraints: High educational visual clarity, balanced framing, no watermarks, no logos, "
+        "no camera equipment or tripods visible inside the frame, no extra random text."
     ]
 
-    return " ".join([p for p in prompt_parts if p]).strip()
+    # Combine into a rich, detailed master prompt
+    full_prompt_sections = [
+        style_anchor,
+        " ".join(comp_parts),
+        " ".join(detail_parts),
+        " ".join(text_directives),
+        " ".join(constraints)
+    ]
+
+    return "\n".join([s for s in full_prompt_sections if s]).strip()
 
 
 class StoryboardPromptPDF(FPDF):
@@ -130,7 +142,7 @@ class StoryboardPromptPDF(FPDF):
         self.set_font('Helvetica', 'B', 14)
         self.cell(self.epw, 10, 'Master Storyboard Panel Prompts', border=0, new_x="LMARGIN", new_y="NEXT", align='C')
         self.set_font('Helvetica', 'I', 10)
-        self.cell(self.epw, 5, 'Client Approved 16:9 Line-Art Visual Specifications', border=0, new_x="LMARGIN", new_y="NEXT", align='C')
+        self.cell(self.epw, 5, 'Client Approved 16:9 Visual Specifications', border=0, new_x="LMARGIN", new_y="NEXT", align='C')
         self.ln(5)
 
     def footer(self):
